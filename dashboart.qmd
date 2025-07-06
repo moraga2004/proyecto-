@@ -1,0 +1,183 @@
+---
+title: "Dashboard Agricultura y PIB"
+author: "Franchesca Moraga"
+format: dashboard
+editor: visual
+execute:
+  enabled: true
+  echo: true
+  warning: false
+  message: false
+  server: shiny
+---
+
+```{r}
+library(tmap)
+tmap_mode("view")
+```
+
+
+```{r}
+# Cargar librerías
+library(shiny)
+library(tidyverse)
+library(readxl)
+library(DT)
+library(plotly)
+library(tmap)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(sf)
+
+# Leer y limpiar datos
+datos_raw <- read_csv("API_NV.AGR.TOTL.ZS_DS2_en_csv_v2_85254.csv", skip = 4)
+
+datos <- datos_raw |>
+  select(`Country Name`, `Country Code`, matches("^\\d{4}$"))
+
+datos_limpios <- datos |>
+  pivot_longer(cols = -c(`Country Name`, `Country Code`),
+               names_to = "Year",
+               values_to = "PIB_Agricola") |>
+  mutate(Year = as.integer(Year)) |>
+  drop_na(PIB_Agricola)
+
+paises <- sort(unique(datos_limpios$`Country Name`))
+
+# Leer shapefile de países de LATAM
+latam <- ne_countries(scale = "medium", returnclass = "sf") |>
+  filter(region_un == "Americas" & subregion %in% c("South America", "Central America", "Caribbean"))
+
+# Filtrar datos a esos países
+datos_latam <- datos |>
+  filter(`Country Name` %in% latam$name) |>
+  select(País = `Country Name`, matches("^\\d{4}$"))
+
+# Interfaz UI
+ui <- fluidPage(
+  titlePanel("Dashboard: Agricultura y PIB en América Latina"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("pais_input", "Seleccionar países:",
+                  choices = paises,
+                  selected = c("El Salvador", "Uruguay", "Honduras"),
+                  multiple = TRUE),
+      sliderInput("year_input", "Rango de años:",
+                  min = min(datos_limpios$Year),
+                  max = max(datos_limpios$Year),
+                  value = c(2000, 2020),
+                  step = 1),
+      sliderInput("anio_mapa", "Año para el mapa:",
+                  min = 1960, max = 2023, value = 2022, step = 1)
+    ),
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Gráfico de Línea",
+                 plotlyOutput("grafico_lineas")),
+        tabPanel("Gráfico de Barras",
+                 plotlyOutput("grafico_barras")),
+        tabPanel("Tabla",
+                 DTOutput("tabla")),
+        tabPanel("Mapa",
+                 tmapOutput("mapa", height = "600px"))
+      )
+    )
+  )
+)
+
+# Lógica del servidor
+server <- function(input, output, session) {
+  # Datos filtrados
+  datos_filtrados <- reactive({
+    datos_limpios |>
+      filter(`Country Name` %in% input$pais_input,
+             Year >= input$year_input[1],
+             Year <= input$year_input[2])
+  })
+
+  # Gráfico de línea (El Salvador)
+  output$grafico_lineas <- renderPlotly({
+    df <- datos_limpios |>
+      filter(`Country Name` == "El Salvador")
+
+    g <- ggplot(df, aes(x = Year, y = PIB_Agricola)) +
+      geom_line(color = "#6A0DAD", size = 1.4) +
+      geom_point(color = "#DAA520", size = 2) +
+      labs(
+        title = "Participación del Sector Agrícola en El Salvador (1960–2023)",
+        x = "Año", y = "% del PIB agrícola"
+      ) +
+      theme_minimal(base_size = 14)
+
+    ggplotly(g)
+  })
+
+  # Gráfico de barras 2022
+  output$grafico_barras <- renderPlotly({
+    df_barras <- data.frame(
+      país = c("Bolivia", "Honduras", "Rep. Dominicana", "Uruguay", "El Salvador"),
+      pib_agricola = c(13.47, 11.98, 6.37, 5.57, 4.61)
+    )
+
+    plot_ly(
+      data = df_barras,
+      x = ~pib_agricola,
+      y = ~reorder(país, pib_agricola),
+      type = 'bar',
+      orientation = 'h',
+      marker = list(color = '#228B22')
+    ) |>
+      layout(
+        title = list(
+          text = "PIB agrícola como % del PIB total (2022)",
+          font = list(size = 18)
+        ),
+        xaxis = list(title = "% del PIB"),
+        yaxis = list(title = ""),
+        margin = list(l = 100)
+      )
+  })
+
+  # Tabla interactiva
+  output$tabla <- renderDT({
+    df_tabla <- data.frame(
+      País = c("Bolivia", "República Dominicana", "Honduras", "El Salvador", "Uruguay"),
+      Agricultura_PIB = c(12.47, 5.79, 12.47, 4.68, 6.96),
+      Año = rep(2022, 5)
+    )
+
+    datatable(df_tabla,
+              options = list(
+                pageLength = 5,
+                autoWidth = TRUE,
+                searchable = TRUE,
+                ordering = TRUE
+              ),
+              rownames = FALSE)
+  })
+
+  # Mapa interactivo
+  output$mapa <- renderTmap({
+    anio_sel <- as.character(input$anio_mapa)
+
+    datos_anio <- datos_latam |>
+      select(País, valor = all_of(anio_sel))
+
+    capa_mapa <- left_join(latam, datos_anio, by = c("name" = "País"))
+
+    tm_basemap("OpenStreetMap") +
+      tm_shape(capa_mapa) +
+      tm_polygons("valor",
+                  palette = "YlGn", style = "quantile",
+                  title = paste("Agricultura (% del PIB) -", anio_sel),
+                  id = "name",
+                  border.col = "white") +
+      tm_layout(legend.outside = TRUE)
+  })
+}
+
+# Ejecutar app
+shinyApp(ui, server)
+
+```
+
